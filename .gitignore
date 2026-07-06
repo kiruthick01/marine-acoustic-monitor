@@ -7,3 +7,4 @@ venv/
 .idea/
 *.wav
 *.flac
+simulation/output/
