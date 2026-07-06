@@ -2,6 +2,8 @@
 
 Status: planning/architecture phase. No hardware purchased, no implementation code written yet. This document describes the intended system, consistent with [DECISIONS.md](../DECISIONS.md).
 
+![System architecture](../diagrams/marine_monitor_system_architecture.svg)
+
 ## Overview
 
 The system is a single-node acoustic + environmental monitoring platform built around a Raspberry Pi as the edge compute unit. It performs on-device signal processing and anomaly detection, and transmits only compact summaries over a low-bandwidth link, while retaining full-resolution data locally for manual retrieval. The core architecture is deployment-agnostic: the same electronics and software stack run whether the unit is mounted on a floating buoy or a fixed dock/pier structure. Multi-node/multi-buoy scaling and a central time-series backend are explicitly future work, not part of this design.

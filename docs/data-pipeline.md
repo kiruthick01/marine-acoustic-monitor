@@ -4,6 +4,8 @@ Status: planning/architecture phase. No implementation code yet. Consistent with
 
 ## Storage tiers
 
+![Data storage tiers](../diagrams/marine_monitor_data_storage_tiers.svg)
+
 **Tier 1 — Raw audio, flat files (local storage, SD/SSD)**
 Full-resolution WAV/FLAC files, one per capture window. Filename encodes capture timestamp, giving a natural sort order and avoiding a filename-lookup table. This is the largest and highest-fidelity data tier; never transmitted over the low-bandwidth telemetry link, only retrieved in bulk.
 

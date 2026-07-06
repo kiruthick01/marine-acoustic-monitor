@@ -2,6 +2,8 @@
 
 Status: planning/architecture phase. No implementation code yet. Consistent with [DECISIONS.md](../DECISIONS.md). Three stages, per the locked decision — this document expands each into implementation-blueprint detail.
 
+![ML pipeline](../diagrams/marine_monitor_ml_pipeline.svg)
+
 ## Stage 1 — On-device feature extraction
 
 Runs on the Pi, every wake window, as part of the near-real-time capture -> process -> sleep loop (see [data-pipeline.md](data-pipeline.md)).
