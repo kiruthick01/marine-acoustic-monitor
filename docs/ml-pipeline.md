@@ -4,6 +4,25 @@ Status: planning/architecture phase. No implementation code yet. Consistent with
 
 ![ML pipeline](../diagrams/marine_monitor_ml_pipeline.svg)
 
+## Stage 0 — Signal conditioning
+
+Runs on the Pi, immediately after capture and immediately before Stage 1 feature extraction, in the same wake window (see [data-pipeline.md](data-pipeline.md)). Purely a pre-processing pass on the raw audio — it produces no features and nothing is persisted from it beyond a diagnostic SNR estimate; its only output is conditioned audio handed to Stage 1.
+
+**Bandpass filter (Butterworth, via SciPy):**
+- Isolates the frequency range that carries signal of interest and discards the rest before it can add noise/variance to downstream features.
+- Vessel tonal peaks (shaft/blade-rate harmonics) concentrate around 60–120 Hz; biological calls typically extend higher. Default passband: 20–4000 Hz — wide enough to retain both, while cutting very low-frequency flow/handling noise below 20 Hz and very high-frequency electronic/self-noise above 4 kHz.
+- Zero-phase (filtfilt-style) application, so no time delay is introduced ahead of Stage 1's time-domain features (RMS std, ZCR).
+
+**Noise floor estimation:**
+- Estimated from the quietest ~1-second segment of the capture window, standing in for a noise-only reference since there's no separate noise-only channel to sample.
+- Produces a per-frequency-bin magnitude spectrum (via STFT), used as the subtrahend in spectral denoising below.
+
+**Spectral denoising (spectral subtraction):**
+- STFT the (bandpass-filtered) signal, subtract the estimated noise floor's magnitude per frame, reconstruct via inverse STFT using the original phase.
+- Baseline method, not state-of-the-art: known to produce "musical noise" (isolated, randomly-appearing tonal artifacts) from hard-flooring negative post-subtraction magnitude at zero. Acceptable for this stage; a more robust approach (Wiener filtering, oversubtraction with a spectral floor, minimum-statistics noise tracking) is a candidate future improvement if conditioning quality turns out to bottleneck downstream detection.
+
+**Output:** conditioned audio (same shape as the raw capture) passed directly into Stage 1, plus a diagnostic dict of estimated SNR before/after conditioning (in dB) for sanity-checking that conditioning is actually helping on a given window. Tier 1 storage still archives the *raw*, unconditioned audio — conditioning is a feature-extraction-time step, not a change to what's archived.
+
 ## Stage 1 — On-device feature extraction
 
 Runs on the Pi, every wake window, as part of the near-real-time capture -> process -> sleep loop (see [data-pipeline.md](data-pipeline.md)).

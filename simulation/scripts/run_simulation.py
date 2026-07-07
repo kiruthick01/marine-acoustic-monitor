@@ -5,9 +5,10 @@ Simulates N duty-cycle windows across a timeline (DECISIONS.md: "record N
 seconds every M minutes"), using the synthetic generators to produce audio
 and environmental data with randomly injected biological calls, vessel
 noise events, and (at most) one storm runoff event. Each window is run
-through feature extraction (Stage 1, docs/ml-pipeline.md) and written to
-Tier 1 (flat audio files) and Tier 2 (SQLite), per docs/data-pipeline.md's
-storage tiers.
+through signal conditioning (Stage 0, docs/ml-pipeline.md) and feature
+extraction (Stage 1, docs/ml-pipeline.md), and written to Tier 1 (flat
+audio files) and Tier 2 (SQLite), per docs/data-pipeline.md's storage
+tiers.
 
 Anomaly detection itself (Stage 2) is deliberately NOT run here -- this
 script's job is generation, feature extraction, and storage. Detection and
@@ -44,6 +45,7 @@ from simulation.pipeline.feature_extraction import (
     extract_acoustic_features,
     extract_environmental_features,
 )
+from simulation.pipeline.signal_conditioning import condition_signal
 from simulation.pipeline.storage import init_db, insert_window_record
 
 SAMPLE_RATE = 22050
@@ -143,9 +145,16 @@ def run_simulation(
         audio_path = os.path.join(AUDIO_DIR, audio_filename)
         wavfile.write(audio_path, SAMPLE_RATE, audio)
 
+        # --- Stage 0: signal conditioning (bandpass + spectral denoise) ---
+        # Runs on the raw captured audio before feature extraction sees it;
+        # Tier 1 storage below still writes the raw (unconditioned) audio,
+        # since conditioning is a feature-extraction-time step, not a
+        # change to what's archived.
+        conditioned_audio, conditioning_diagnostics = condition_signal(audio, SAMPLE_RATE)
+
         # --- Stage 1: feature extraction ---
         env_row = env_series.iloc[window_index]
-        acoustic_features = extract_acoustic_features(audio, SAMPLE_RATE)
+        acoustic_features = extract_acoustic_features(conditioned_audio, SAMPLE_RATE)
         environmental_features = extract_environmental_features(env_row)
         joint_vector = build_joint_feature_vector(acoustic_features, environmental_features)
 
@@ -176,6 +185,7 @@ def run_simulation(
                 "audio_onset_s": audio_meta["onset_s"],
                 "env_anomaly_active": env_anomaly_active,
                 "env_anomaly_type": "storm_runoff" if env_anomaly_active else None,
+                "signal_conditioning": conditioning_diagnostics,
                 # stashed so evaluate.py can fit/score without re-running
                 # feature extraction or parsing it back out of SQLite
                 "feature_vector": joint_vector.to_dict(),
