@@ -62,6 +62,29 @@ STORM_EVENT_PROBABILITY = 0.6  # chance the run includes one storm/runoff event 
 CALIBRATION_FRACTION = 0.2
 MIN_CALIBRATION_WINDOWS = 10
 
+# Storm/runoff is capped to a bounded, short event rather than the
+# uncapped real-world ~3-day recovery (see synthetic_environmental.py's
+# `max_duration_windows`) specifically so it leaves room for a genuinely-
+# normal tail afterward -- uncapped, it was running to the end of the
+# timeline and leaving zero true-negative windows in the evaluation set.
+STORM_MAX_DURATION_WINDOWS = 30
+# Normal buffer required between the end of calibration and storm onset,
+# and again between the end of the storm and the end of the timeline, so
+# "normal" windows exist on both sides of the event, not just before the
+# whole evaluation period.
+MIN_NORMAL_GAP_BEFORE_STORM_WINDOWS = 10
+MIN_NORMAL_TAIL_AFTER_STORM_WINDOWS = 20
+# Extra margin (in windows) added around the storm's active range from
+# which vessel events are excluded, so a vessel event can't land right at
+# the storm's onset/recovery edge either.
+STORM_VESSEL_EXCLUSION_BUFFER_WINDOWS = 2
+
+# Minimum fraction of the evaluation set (post-calibration windows) that
+# must be true negatives (no injected anomaly of any kind active) for
+# per-type precision/recall to mean anything -- see run_simulation()'s
+# post-generation check.
+MIN_TRUE_NEGATIVE_FRACTION = 0.25
+
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "output")
 AUDIO_DIR = os.path.join(OUTPUT_DIR, "audio")
 DB_PATH = os.path.join(OUTPUT_DIR, "db.sqlite")
@@ -69,7 +92,7 @@ GROUND_TRUTH_PATH = os.path.join(OUTPUT_DIR, "ground_truth.json")
 
 
 def run_simulation(
-    n_windows: int = 100,
+    n_windows: int = 150,
     window_interval_minutes: float = 10,
     seed: int = None,
 ) -> None:
@@ -96,20 +119,44 @@ def run_simulation(
     # than per-window) because the storm runoff anomaly is a single
     # multi-window event with an onset and gradual recovery -- it can't be
     # injected independently window-by-window the way a biological call or
-    # vessel passage can. The onset is restricted to after the calibration
-    # period so the calibration period stays anomaly-free.
+    # vessel passage can. The onset is restricted to a window that leaves
+    # both a normal gap after calibration and a normal tail before the end
+    # of the timeline, and the event's duration is capped (see
+    # STORM_MAX_DURATION_WINDOWS), so the storm is a clearly bounded period
+    # with genuinely-normal windows on both sides rather than one that runs
+    # to the end of the timeline and leaves no true negatives to evaluate.
     storm_onset = None
     post_calibration_windows = n_windows - calibration_windows
-    if post_calibration_windows > 15 and random.random() < STORM_EVENT_PROBABILITY:
-        storm_onset = random.randint(calibration_windows, n_windows - 5)
+    min_room_for_storm = (
+        MIN_NORMAL_GAP_BEFORE_STORM_WINDOWS + STORM_MAX_DURATION_WINDOWS + MIN_NORMAL_TAIL_AFTER_STORM_WINDOWS
+    )
+    if post_calibration_windows > min_room_for_storm and random.random() < STORM_EVENT_PROBABILITY:
+        earliest_onset = calibration_windows + MIN_NORMAL_GAP_BEFORE_STORM_WINDOWS
+        latest_onset = n_windows - STORM_MAX_DURATION_WINDOWS - MIN_NORMAL_TAIL_AFTER_STORM_WINDOWS
+        storm_onset = random.randint(earliest_onset, latest_onset)
 
-    env_series, env_meta = generate_environmental_series(n_windows, inject_anomaly_at=storm_onset)
+    env_series, env_meta = generate_environmental_series(
+        n_windows, inject_anomaly_at=storm_onset, max_duration_windows=STORM_MAX_DURATION_WINDOWS
+    )
 
     storm_range = set()
     if env_meta["anomaly_injected"]:
         onset = env_meta["onset_window"]
         duration = env_meta["duration_windows"]
         storm_range = set(range(onset, onset + duration))
+
+    # Vessel events must never land inside (or right at the edge of) the
+    # storm's active range: a window flagged "vessel" while the storm is
+    # also active would contaminate the per-type evaluation, since a
+    # detector hit there can't be attributed to one type or the other.
+    # Rejecting vessel placement in this zone (falling back to "no audio
+    # anomaly" for that window's roll) keeps the two anomaly types'
+    # injection periods explicitly non-overlapping.
+    vessel_forbidden_windows = set()
+    if storm_range:
+        lo = max(0, min(storm_range) - STORM_VESSEL_EXCLUSION_BUFFER_WINDOWS)
+        hi = min(n_windows - 1, max(storm_range) + STORM_VESSEL_EXCLUSION_BUFFER_WINDOWS)
+        vessel_forbidden_windows = set(range(lo, hi + 1))
 
     db_conn = init_db(DB_PATH)
 
@@ -131,7 +178,10 @@ def run_simulation(
             roll = random.random()
             if roll < BIOLOGICAL_CALL_PROBABILITY:
                 audio_anomaly = "biological"
-            elif roll < BIOLOGICAL_CALL_PROBABILITY + VESSEL_EVENT_PROBABILITY:
+            elif (
+                roll < BIOLOGICAL_CALL_PROBABILITY + VESSEL_EVENT_PROBABILITY
+                and window_index not in vessel_forbidden_windows
+            ):
                 audio_anomaly = "vessel"
             else:
                 audio_anomaly = None
@@ -176,10 +226,12 @@ def run_simulation(
 
         # Single consolidated label for evaluate.py's per-type breakdown,
         # collapsing the two independently-drawn anomaly channels
-        # (audio_anomaly_type, env_anomaly_active) into one field. Audio
-        # anomalies take priority in the rare case a window has both an
-        # audio anomaly and falls inside the storm's active range, since
-        # audio_anomaly_type is itself the more specific/rarer event.
+        # (audio_anomaly_type, env_anomaly_active) into one field. Vessel
+        # events are rejected from ever landing inside the storm's active
+        # range (see vessel_forbidden_windows above), so only a biological
+        # call can still coincide with an active storm; audio anomalies
+        # take priority in that case since audio_anomaly_type is itself
+        # the more specific/rarer event.
         if audio_anomaly == "vessel":
             anomaly_type = "vessel"
         elif audio_anomaly == "biological":
@@ -231,10 +283,29 @@ def run_simulation(
     print(f"Database:     {os.path.abspath(DB_PATH)}")
     print(f"Ground truth: {os.path.abspath(GROUND_TRUTH_PATH)}")
 
+    # Sanity check on the same split evaluate.py uses (windows after
+    # calibration_windows): if anomaly injection ever again ends up
+    # covering nearly the whole evaluation period, per-type precision/
+    # recall becomes meaningless (no true negatives to measure against).
+    # Warn loudly instead of letting that happen silently.
+    evaluation_set = windows_out[calibration_windows:]
+    if evaluation_set:
+        n_true_negatives = sum(1 for w in evaluation_set if not w["true_anomaly"])
+        true_negative_fraction = n_true_negatives / len(evaluation_set)
+        if true_negative_fraction < MIN_TRUE_NEGATIVE_FRACTION:
+            print(
+                f"WARNING: only {true_negative_fraction:.1%} of the {len(evaluation_set)} evaluation "
+                f"windows are true negatives (below the {MIN_TRUE_NEGATIVE_FRACTION:.0%} threshold) -- "
+                "anomaly injection is covering too much of the evaluation period for per-type "
+                "precision/recall to be meaningful. Increase --n-windows or widen the normal gaps "
+                "around injected events.",
+                file=sys.stderr,
+            )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the end-to-end duty-cycle simulation.")
-    parser.add_argument("--n-windows", type=int, default=100, help="Number of duty-cycle windows to simulate.")
+    parser.add_argument("--n-windows", type=int, default=150, help="Number of duty-cycle windows to simulate.")
     parser.add_argument(
         "--window-interval-minutes", type=float, default=10, help="Minutes between duty-cycle windows."
     )

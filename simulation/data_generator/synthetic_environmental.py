@@ -242,7 +242,7 @@ def compute_rate_of_change(readings: pd.DataFrame) -> pd.DataFrame:
 
 
 def generate_environmental_series(
-    n_windows: int, inject_anomaly_at: Optional[int] = None
+    n_windows: int, inject_anomaly_at: Optional[int] = None, max_duration_windows: Optional[int] = None
 ) -> Tuple[pd.DataFrame, dict]:
     """
     Generate one full environmental time series across n_windows duty-cycle
@@ -259,6 +259,13 @@ def generate_environmental_series(
         n_windows: number of duty-cycle windows (rows) to generate.
         inject_anomaly_at: window index at which to start a storm/runoff
             event, or None for a pure baseline series (negative example).
+        max_duration_windows: optional cap on the event's duration, in
+            windows, on top of the real-world-timescale duration below.
+            Callers on a short/demo timeline (e.g. simulation/scripts/
+            run_simulation.py) need the event to end with room left over
+            for genuinely-normal windows afterward -- the real-world
+            ~3-day recovery, uncapped, can span the entire rest of a short
+            series. None keeps the uncapped real-world-timescale behavior.
 
     Returns:
         (readings, metadata): `readings` is the DataFrame (window_index,
@@ -293,6 +300,8 @@ def generate_environmental_series(
         # rather than one truncated mid-recovery.
         real_recovery_minutes = 3 * MINUTES_PER_DAY
         target_duration_windows = int(real_recovery_minutes / window_interval_minutes)
+        if max_duration_windows is not None:
+            target_duration_windows = min(target_duration_windows, max_duration_windows)
         duration_windows = min(target_duration_windows, n_windows - inject_anomaly_at)
 
         readings = inject_storm_runoff_event(readings, inject_anomaly_at, duration_windows)

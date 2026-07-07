@@ -268,6 +268,15 @@ def condition_signal(audio: np.ndarray, sample_rate: int) -> Tuple[np.ndarray, D
     estimate is computed on the already band-limited signal (matching what
     Stage 1 feature extraction will actually see).
 
+    bandpass_filter() is called with high_hz=12000 rather than its own
+    20-4000 Hz general-purpose default: this pipeline's audio is produced
+    exclusively by simulation/data_generator/synthetic_audio.py, whose
+    biological whistle sweeps 4-12 kHz (see bandpass_filter()'s docstring)
+    -- the 4000 Hz default would filter that call almost entirely out
+    before it ever reached feature extraction, which is exactly the
+    "callers working specifically with the synthetic whistle generator"
+    case that docstring calls out.
+
     Args:
         audio: 1D audio array for one capture window (as produced by
             simulation/data_generator/synthetic_audio.py).
@@ -285,7 +294,7 @@ def condition_signal(audio: np.ndarray, sample_rate: int) -> Tuple[np.ndarray, D
     audio = np.asarray(audio, dtype=np.float32)
     snr_before_db = _estimate_snr_db(audio, sample_rate)
 
-    filtered = bandpass_filter(audio, sample_rate)
+    filtered = bandpass_filter(audio, sample_rate, high_hz=12000)
     conditioned = spectral_denoise(filtered, sample_rate)
 
     snr_after_db = _estimate_snr_db(conditioned, sample_rate)
@@ -300,12 +309,17 @@ def condition_signal(audio: np.ndarray, sample_rate: int) -> Tuple[np.ndarray, D
 if __name__ == "__main__":
     from simulation.data_generator.synthetic_audio import generate_duty_cycle_sample
 
-    # One duty-cycle window with a vessel passage event, demonstrating the
-    # full Stage 0 flow end-to-end on synthetic data.
-    audio, audio_meta = generate_duty_cycle_sample(duration_s=30, sample_rate=22050, inject_anomaly="vessel")
+    # One capture window per anomaly type, at the same 5s duration
+    # run_simulation.py actually uses (the 30s vessel-only demo this used
+    # to run masked the biological-call regression: vessel's tonal energy
+    # sits well under 4000 Hz so it survived the old default fine, but
+    # only the wider 5-12 kHz duration_s=5 case here exposed it).
+    for anomaly in [None, "vessel", "biological"]:
+        audio, audio_meta = generate_duty_cycle_sample(duration_s=5, sample_rate=22050, inject_anomaly=anomaly)
+        conditioned_audio, diagnostics = condition_signal(audio, sample_rate=22050)
 
-    conditioned_audio, diagnostics = condition_signal(audio, sample_rate=22050)
-
-    print("Audio ground truth:", audio_meta)
-    print(f"Conditioned audio shape: {conditioned_audio.shape}")
-    print(f"Diagnostics: {diagnostics}")
+        print(f"-- anomaly={anomaly} --")
+        print("Audio ground truth:", audio_meta)
+        print(f"Conditioned audio shape: {conditioned_audio.shape}")
+        print(f"Diagnostics: {diagnostics}")
+        print()
