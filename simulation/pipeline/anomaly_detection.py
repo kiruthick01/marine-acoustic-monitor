@@ -154,6 +154,6 @@ class BaselineAnomalyDetector:
         x = vector.reshape(1, -1)
         raw_normality_score = self._model.decision_function(x)[0]
         anomaly_score = -float(raw_normality_score)
-        is_anomaly = anomaly_score > self._threshold
+        is_anomaly = bool(anomaly_score > self._threshold)
 
         return {"anomaly_score": anomaly_score, "is_anomaly": is_anomaly}

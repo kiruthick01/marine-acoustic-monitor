@@ -32,6 +32,12 @@ def test_mock_env_sensors_storm_trigger_raises_turbidity():
     sensors = MockEnvironmentalSensors(window_interval_minutes=10.0, rng=np.random.default_rng(1))
     baseline = sensors.read()
     sensors.trigger_storm()
+    # Mirrors synthetic_environmental.py's inject_storm_runoff_event ramp:
+    # envelope is 0 at the onset window itself (linspace(0, 1, rise_windows)),
+    # so the effect is only visible above sensor noise a few windows into the
+    # ramp -- advance past the onset window before asserting.
+    for _ in range(19):
+        sensors.read()
     storm_reading = sensors.read()
     assert storm_reading["turbidity_ntu"] > baseline["turbidity_ntu"]
     assert storm_reading["salinity_psu"] < baseline["salinity_psu"]
